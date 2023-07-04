@@ -1,4 +1,4 @@
-﻿using Extra.EventPresences.DTO.Dto;
+﻿using Extra.EventPresences.DTO;
 using Extra.EventPresences.Middleware.Managers.Interfaces;
 using Extra.EventPresences.Model.Enums;
 using Microsoft.AspNetCore.Mvc;

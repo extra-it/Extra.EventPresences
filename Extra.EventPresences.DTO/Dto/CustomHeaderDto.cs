@@ -6,7 +6,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace Extra.EventPresences.DTO.Dto
+namespace Extra.EventPresences.DTO
 {
     public class CustomHeaderDto
     {

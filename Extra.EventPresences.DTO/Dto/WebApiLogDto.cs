@@ -9,7 +9,7 @@ using Extra.EventPresences.Model.Enums;
 using System.Text.RegularExpressions;
 using Newtonsoft.Json;
 
-namespace Extra.EventPresences.DTO.Dto
+namespace Extra.EventPresences.DTO
 {
     public class WebApiLogDto : CustomHeaderDto
     {

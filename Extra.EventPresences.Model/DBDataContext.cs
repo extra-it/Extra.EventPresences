@@ -31,8 +31,10 @@ namespace Extra.EventPresences.Model
         public DbSet<User> Users { get; set; }
         public DbSet<Event> Events { get; set; }
         public DbSet<WebApiLog> WebApiLogs { get; set; }
+        public DbSet<FkEnums> FkEnums { get; set; }
+        public DbSet<FkGroups> FkGroups { get; set; }
 
-        
+
 
     }
 }

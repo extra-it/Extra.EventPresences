@@ -1,6 +1,6 @@
 ﻿using AutoMapper;
 using Azure;
-using Extra.EventPresences.DTO.Dto;
+using Extra.EventPresences.DTO;
 using Extra.EventPresences.Model.Entities;
 using System;
 using System.Collections.Generic;

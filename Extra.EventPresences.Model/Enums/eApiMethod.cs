@@ -13,5 +13,18 @@ namespace Extra.EventPresences.Model.Enums
         GetPresenceStatistics = 52,
         ExportUsers = 53,
         AddUser = 54,
+        CheckIn=55,
+        CheckOut=56,
+        CancelCheckIn=57,
+        CancelCheckOut=58,
+        GetCompanions=59,
+        CheckInMultiple = 60,
+        CheckOutMultiple = 61,
+        GetInvited = 62,
+        CancelCheckOutMultiple=63,
+        CancelCheckInMultiple=64,
+        GetUserById = 65,
+        GetInviteds=66,
+        GetQRCode=67
     }
 }

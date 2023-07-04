@@ -5,7 +5,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace Extra.EventPresences.DTO.Dto
+namespace Extra.EventPresences.DTO
 {
     public class BaseResponseApiDto
     {

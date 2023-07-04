@@ -1,15 +1,26 @@
-﻿using Extra.EventPresences.DTO.Dto;
+﻿using Azure;
+using Extra.EventPresences.DTO;
+using Extra.EventPresences.DTO.Enums;
+using Extra.EventPresences.Middleware.Classes;
 using Extra.EventPresences.Middleware.Managers.Interfaces;
 using Extra.EventPresences.Model;
 using Extra.EventPresences.Model.Entities;
 using Extra.EventPresences.Model.Enums;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
+using Newtonsoft.Json;
+using NPOI.OpenXmlFormats.Wordprocessing;
 using NPOI.POIFS.Crypt.Dsig;
 using NPOI.XSSF.UserModel;
+using QRCoder;
 using System;
 using System.Collections.Generic;
+using System.Data;
+using System.Drawing;
+using System.IO;
 using System.Linq;
+using System.Net.Mail;
 using System.Text;
 using System.Threading.Tasks;
 
@@ -20,17 +31,68 @@ namespace Extra.EventPresences.Middleware.Managers
         public UserManager(DBDataContext dbdatacontext) : base(dbdatacontext)
         {
         }
-        public BaseResponseDto<List<UserDto>> GetUsers(int EventId)
+        public BaseResponseDto<UserDto> GetUserById(int UserId)
+        {
+            var retVal = new BaseResponseDto<UserDto>();
+            retVal.Entity = new UserDto();
+            try
+            {
+
+                var user = DataContext.Users.FirstOrDefault(x => x.ID == UserId && !x.Deleted);
+                if (user != null)
+                {
+                    retVal.Entity = MapperManager.GetMapper().Map<UserDto>(user);
+                    retVal.Message = "Procedura eseguita correttamente";
+                    retVal.Success = true;
+                }
+                else
+                {
+                    retVal.Message = "Utente non trovato!";
+                    retVal.Success = false;
+                }
+            }
+            catch (Exception ex)
+            {
+                retVal.Success = false;
+                retVal.Message = "La procedura ha generato il seguente errore: " + ex.Message;
+            }
+            return retVal;
+        }
+
+        public BaseResponseDto<List<UserDto>> GetUsers(GetUsersFilter Filter)
         {
             var retVal = new BaseResponseDto<List<UserDto>>();
             retVal.Entity = new List<UserDto>();
             try
             {
+                IQueryable<User> tempResult = DataContext.Users.Where(x=> !x.Deleted);
 
-                foreach (User user in DataContext.Users.Where(x => x.EventID == EventId && !x.Deleted).ToList())
+                if (Filter.EventId != 0)
+                {
+                    tempResult = tempResult.Where(x => x.EventID == Filter.EventId);
+                }
+                if (Filter.UserType != null)
+                {
+                    if (Filter.UserType == eUserType.Invited)
+                    {
+                        tempResult = tempResult.Where(x => x.InvitedID == null);
+                    }
+                    else
+                    {
+                        tempResult = tempResult.Where(x => x.InvitedID != null);
+                    }
+                }
+                if (Filter.InvitedID != 0)
+                {
+                    tempResult = tempResult.Where(x => x.InvitedID == Filter.InvitedID);
+                }
+
+                foreach (User user in tempResult.ToList())
                 {
                     retVal.Entity.Add(MapperManager.GetMapper().Map<UserDto>(user));
                 }
+                //Ordino la lista per il campo Name
+                retVal.Entity = retVal.Entity.OrderBy(x => x.Name).ToList();
                 retVal.Message = "Procedura eseguita correttamente";
                 retVal.Success = true;
 
@@ -43,9 +105,9 @@ namespace Extra.EventPresences.Middleware.Managers
             return retVal;
         }
 
-        public BaseResponseDto UpdateUser(UserDto userdto)
+        public BaseResponseDto<UserDto> UpdateUser(UserDto userdto)
         {
-            var retVal = new BaseResponseDto();
+            var retVal = new BaseResponseDto<UserDto>();
             try
             {
                 string check = CheckUser(userdto);
@@ -68,6 +130,7 @@ namespace Extra.EventPresences.Middleware.Managers
                         objDB.DateUpdate = DateTime.UtcNow;
                         DataContext.Entry(objDB).State = EntityState.Modified;
                         DataContext.SaveChanges();
+                        retVal = GetUserById(objDB.ID);
                         retVal.Message = "Utente aggiornato con successo";
                         retVal.Success = true;
                     }
@@ -90,9 +153,11 @@ namespace Extra.EventPresences.Middleware.Managers
                 var EventUsers = DataContext.Users.Where(x => x.EventID == EventId && !x.Deleted).ToList();
                 if (EventUsers.Count() > 0)
                 {
-                    retVal.Entity.UserTotalNum = EventUsers.Count();
-                    retVal.Entity.UserPresences = EventUsers.Where(x => x.IsPresent).ToList().Count();
-                    retVal.Entity.UserPresencesPerc = Math.Round((double)retVal.Entity.UserPresences / (double)retVal.Entity.UserTotalNum * 100.0, 2);
+                    retVal.Entity.UserInvitedTotalNum = EventUsers.Count();
+                    retVal.Entity.UserPresences = EventUsers.Where(x => x.StatusId == (int)eUserStatus.Present).ToList().Count();
+                    retVal.Entity.UserPresencesPerc = Math.Round((double)retVal.Entity.UserPresences / (double)retVal.Entity.UserInvitedTotalNum * 100.0, 2);
+                    retVal.Entity.UserParticipants = EventUsers.Where(x => x.StatusId == (int)eUserStatus.Present || x.StatusId == (int)eUserStatus.Left).ToList().Count();
+                    retVal.Entity.UserParticipantsPerc = Math.Round((double)retVal.Entity.UserParticipants / (double)retVal.Entity.UserInvitedTotalNum * 100.0, 2);
                 }
                 retVal.Message = "Statistiche estratte correttamente";
                 retVal.Success = true;
@@ -107,12 +172,12 @@ namespace Extra.EventPresences.Middleware.Managers
         }
 
 
-        public BaseResponseDto<UserDto> AddUser(UserDto userdto)
+        public BaseResponseDto<UserDto> AddUser(UserDto UserDto)
         {
             var retVal = new BaseResponseDto<UserDto>();
             try
             {
-                string check = CheckUser(userdto);
+                string check = CheckUser(UserDto);
                 if (!string.IsNullOrEmpty(check))
                 {
                     retVal.Message = check;
@@ -120,7 +185,12 @@ namespace Extra.EventPresences.Middleware.Managers
                 }
                 else
                 {
-                    var objDB = MapperManager.GetMapper().Map<User>(userdto);
+
+                    ///Setto lo stato a presente e valorizzo l'orario di checkin!
+                    UserDto.CheckInDatetime = DateTime.UtcNow;
+                    UserDto.StatusId = eUserStatus.Present;
+
+                    var objDB = MapperManager.GetMapper().Map<User>(UserDto);
                     objDB.DateInsert = DateTime.UtcNow;
 
 
@@ -141,22 +211,379 @@ namespace Extra.EventPresences.Middleware.Managers
         }
 
 
+        /// <summary>
+        /// Makes the check-in procedure for a specific user
+        /// </summary>
+        /// <param name="userdto"></param>
+        /// <returns></returns>
+        public BaseResponseDto<UserDto> CheckIn(int UserId)
+        {
+
+            return CheckInOut(UserId, eCheckType.CheckIn);
+        }
+
+        public BaseResponseDto<List<UserDto>> CheckIn(List<int> UsersId)
+        {
+
+            return CheckInOut(UsersId, eCheckType.CheckIn);
+        }
+
+        /// <summary>
+        /// Makes the check-out procedure for a specific user
+        /// </summary>
+        /// <param name="userdto"></param>
+        /// <returns></returns>
+        public BaseResponseDto<UserDto> CheckOut(int UserId)
+        {
+
+            return CheckInOut(UserId, eCheckType.CheckOut);
+        }
+
+        public BaseResponseDto<List<UserDto>> CheckOut(List<int> UsersId)
+        {
+
+            return CheckInOut(UsersId, eCheckType.CheckOut);
+        }
+
+        /// <summary>
+        /// Makes the check-in procedure for a specific user
+        /// </summary>
+        /// <param name="userdto"></param>
+        /// <returns></returns>
+        public BaseResponseDto<UserDto> CancelCheckIn(int UserId)
+        {
+
+            return CancelCheckInOut(UserId, eCheckType.CheckIn);
+        }
+
+        public BaseResponseDto<List<UserDto>> CancelCheckIn(List<int> UsersId)
+        {
+
+            return CancelCheckInOut(UsersId, eCheckType.CheckIn);
+        }
+
+        /// <summary>
+        /// Makes the check-out procedure for a specific user
+        /// </summary>
+        /// <param name="userdto"></param>
+        /// <returns></returns>
+        public BaseResponseDto<UserDto> CancelCheckOut(int UserId)
+        {
+
+            return CancelCheckInOut(UserId, eCheckType.CheckOut);
+        }
+
+
+        public BaseResponseDto<List<UserDto>> CancelCheckOut(List<int> UsersId)
+        {
+
+            return CancelCheckInOut(UsersId, eCheckType.CheckOut);
+        }
+
+        private BaseResponseDto<List<UserDto>> CheckInOut(List<int> UsersId, eCheckType CheckType)
+        {
+            var retVal = new BaseResponseDto<List<UserDto>>();
+            List<UserDto> UsersDtoToReturn = new List<UserDto>();
+            IDbContextTransaction tran = null;
+            try
+            {
+                tran = DataContext.Database.BeginTransaction();
+                bool allok = true;
+                foreach (int UserId in UsersId)
+                {
+                    var ret = CheckInOut(UserId, CheckType);
+                    if (!ret.Success)
+                    {
+                        tran.Rollback();
+                        retVal.Success = false;
+                        retVal.Message = ret.Message;
+                        allok = false;
+                        break;
+                    }
+                    else
+                    {
+                        UsersDtoToReturn.Add(ret.Entity);
+                    }
+                }
+                if (allok)
+                {
+                    tran.Commit();
+                    retVal.Entity = UsersDtoToReturn;
+                    if (CheckType == eCheckType.CheckIn)
+                    {
+                        retVal.Message = "Check-in effettuato correttamente";
+                    }
+                    else
+                    {
+                        retVal.Message = "Check-out effettuato correttamente";
+                    }
+                    retVal.Success = true;
+                }
+            }
+            catch (Exception ex)
+            {
+                retVal.Success = false;
+                retVal.Message = "La procedura ha generato il seguente errore: " + ex.Message;
+                if (tran != null)
+                {
+                    tran.Rollback();
+                }
+            }
+            return retVal;
+        }
+
+        private BaseResponseDto<List<UserDto>> CancelCheckInOut(List<int> UsersId, eCheckType CheckType)
+        {
+            var retVal = new BaseResponseDto<List<UserDto>>();
+            List<UserDto> UsersDtoToReturn = new List<UserDto>();
+            IDbContextTransaction tran = null;
+            try
+            {
+                tran = DataContext.Database.BeginTransaction();
+                bool allok = true;
+                foreach (int UserId in UsersId)
+                {
+                    var ret = CancelCheckInOut(UserId, CheckType);
+                    if (!ret.Success)
+                    {
+                        tran.Rollback();
+                        retVal.Success = false;
+                        retVal.Message = ret.Message;
+                        allok = false;
+                        break;
+                    }
+                    else
+                    {
+                        UsersDtoToReturn.Add(ret.Entity);
+                    }
+                }
+                if (allok)
+                {
+                    tran.Commit();
+                    retVal.Entity = UsersDtoToReturn;
+                    if (CheckType == eCheckType.CheckIn)
+                    {
+                        retVal.Message = "Cancel Check-in effettuato correttamente";
+                    }
+                    else
+                    {
+                        retVal.Message = "Cancel Check-out effettuato correttamente";
+                    }
+                    retVal.Success = true;
+                }
+            }
+            catch (Exception ex)
+            {
+                retVal.Success = false;
+                retVal.Message = "La procedura ha generato il seguente errore: " + ex.Message;
+                if (tran != null)
+                {
+                    tran.Rollback();
+                }
+            }
+            return retVal;
+        }
+
+        private BaseResponseDto<UserDto> CheckInOut(int UserId, eCheckType CheckType)
+        {
+            var retVal = new BaseResponseDto<UserDto>();
+            try
+            {
+                var ret = GetUserById(UserId);
+                if (!ret.Success)
+                {
+                    retVal.Success = false;
+                    retVal.Message = ret.Message;
+                }
+                else
+                {
+                    if (CheckType == eCheckType.CheckIn)
+                    {
+                        ret.Entity.CheckInDatetime = DateTime.UtcNow;
+                        ret.Entity.StatusId = eUserStatus.Present;
+                    }
+                    else
+                    {
+                        ret.Entity.CheckOutDatetime = DateTime.UtcNow;
+                        ret.Entity.StatusId = eUserStatus.Left;
+                    }
+                    retVal = UpdateUser(ret.Entity);
+                    if (CheckType == eCheckType.CheckIn)
+                    {
+                        retVal.Message = "Check-in effettuato correttamente";
+                    }
+                    else
+                    {
+                        retVal.Message = "Check-out effettuato correttamente";
+                    }
+                    retVal.Success = true;
+                }
+            }
+            catch (Exception ex)
+            {
+                retVal.Success = false;
+                retVal.Message = "La procedura ha generato il seguente errore: " + ex.Message;
+            }
+            return retVal;
+        }
+
+        private BaseResponseDto<UserDto> CancelCheckInOut(int UserId, eCheckType CheckType)
+        {
+            var retVal = new BaseResponseDto<UserDto>();
+            try
+            {
+                var ret = GetUserById(UserId);
+                if (!ret.Success)
+                {
+                    retVal.Success = false;
+                    retVal.Message = ret.Message;
+                }
+                else
+                {
+                    if (CheckType == eCheckType.CheckIn)
+                    {
+                        ret.Entity.CheckInDatetime = null;
+                        ret.Entity.StatusId = eUserStatus.Absent;
+                    }
+                    else
+                    {
+                        ret.Entity.CheckOutDatetime = null;
+                        ret.Entity.StatusId = eUserStatus.Present;
+                    }
+                    retVal = UpdateUser(ret.Entity);
+                    if (CheckType == eCheckType.CheckIn)
+                    {
+                        retVal.Message = "Annullamento Check-in effettuato correttamente";
+                    }
+                    else
+                    {
+                        retVal.Message = "Annullamento Check-out effettuato correttamente";
+                    }
+                    retVal.Success = true;
+                }
+            }
+            catch (Exception ex)
+            {
+                retVal.Success = false;
+                retVal.Message = "La procedura ha generato il seguente errore: " + ex.Message;
+            }
+            return retVal;
+        }
+
         private string CheckUser(UserDto User)
         {
             if (User == null)
             {
-
                 return "Nessun utente pervenuto!";
             }
-            else if (string.IsNullOrEmpty(User.Firstname))
-            {
-                return "Inserire il nome";
-            }
-            else if (string.IsNullOrEmpty(User.Lastname))
+            if (string.IsNullOrEmpty(User.Lastname))
             {
                 return "Inserire il cognome";
             }
+            if (!string.IsNullOrEmpty(User.Email))
+            {
+                try
+                {
+                    var emailAddress = new MailAddress(User.Email);
+                }
+                catch (Exception)
+                {
+                    return "Indirizzo email non valido";
+                }
+            }
             return string.Empty;
+        }
+
+        public BaseResponseDto<List<UserDto>> GetCompanions(int UserId)
+        {
+            BaseResponseDto<List<UserDto>> retVal = new BaseResponseDto<List<UserDto>>();
+            retVal.Entity = new List<UserDto>();
+            try
+            {
+                GetUsersFilter filter = new GetUsersFilter();
+                filter.InvitedID = UserId;
+
+                var resultGetUser = GetUsers(filter);
+
+                if (resultGetUser.Success)
+                {
+                    //Ordino la lista per il campo Name
+                    retVal.Entity = resultGetUser.Entity.OrderBy(x => x.Name).ToList();
+                    retVal.Message = "Procedura eseguita correttamente";
+                    retVal.Success = true;
+                }
+                else
+                {
+                    retVal.Message = resultGetUser.Message;
+                    retVal.Success = false;
+                }
+
+
+
+            }
+            catch (Exception ex)
+            {
+                retVal.Success = false;
+                retVal.Message = "La procedura ha generato il seguente errore: " + ex.Message;
+            }
+            return retVal;
+        }
+
+        public BaseResponseDto<UserDto> GetInvited(int InvitedID)
+        {
+            BaseResponseDto<UserDto> retVal = new BaseResponseDto<UserDto>();
+            try
+            {
+
+                var result = GetUserById(InvitedID);
+                if (result.Success)
+                {
+                    retVal.Entity = result.Entity;
+                    retVal.Success = true;
+                }
+                else
+                {
+                    retVal.Message = result.Message;
+                    retVal.Success = false;
+                }
+                return retVal;
+            }
+            catch (Exception ex)
+            {
+                retVal.Message = "La procedura ha generato il seguente errore: " + ex.Message;
+                retVal.Success = false;
+                throw;
+            }
+            return retVal;
+        }
+
+        public BaseResponseDto<List<UserDto>> GetInviteds(int EventId)
+        {
+            BaseResponseDto<List<UserDto>> retVal = new BaseResponseDto<List<UserDto>>();
+            try
+            {
+                GetUsersFilter filter = new GetUsersFilter(EventId);
+                filter.UserType = eUserType.Invited;
+                var result = GetUsers(filter);
+                if (result.Success)
+                {
+                    retVal.Entity = result.Entity;
+                    retVal.Success = true;
+                }
+                else
+                {
+                    retVal.Message = result.Message;
+                    retVal.Success = false;
+                }
+                return retVal;
+            }
+            catch (Exception ex)
+            {
+                retVal.Message = "La procedura ha generato il seguente errore: " + ex.Message;
+                retVal.Success = false;
+                throw;
+            }
+            return retVal;
         }
 
         public MemoryStream ExportUsersDto(List<UserDto> usersdto)
@@ -215,13 +642,13 @@ namespace Extra.EventPresences.Middleware.Managers
 
             #region Datad
 
-            foreach (var user in usersdto.OrderBy(x=>x.Lastname).ThenBy(x=>x.Firstname))
+            foreach (var user in usersdto.OrderBy(x => x.Lastname).ThenBy(x => x.Firstname))
             {
                 row = sheet.CreateRow(currentRowIndex);
 
                 row.CreateCell((int)eExportColumns.ID).SetCellValue(user.ID.ToString());
                 row.GetCell((int)eExportColumns.ID).CellStyle = DataStyle;
-                
+
                 row.CreateCell((int)eExportColumns.FIRSTNAME).SetCellValue(user.Firstname);
                 row.GetCell((int)eExportColumns.FIRSTNAME).CellStyle = DataStyle;
 
@@ -234,11 +661,11 @@ namespace Extra.EventPresences.Middleware.Managers
                 row.CreateCell((int)eExportColumns.NOTES).SetCellValue(user.Notes);
                 row.GetCell((int)eExportColumns.NOTES).CellStyle = DataStyle;
 
-                row.CreateCell((int)eExportColumns.PRESENT).SetCellValue(user.IsPresent.ToString());
-                row.GetCell((int)eExportColumns.PRESENT).CellStyle = DataStyle;
+                //row.CreateCell((int)eExportColumns.PRESENT).SetCellValue(user.IsPresent.ToString());
+                //row.GetCell((int)eExportColumns.PRESENT).CellStyle = DataStyle;
 
                 currentRowIndex++;
-                }
+            }
 
             #endregion
 
@@ -255,6 +682,28 @@ namespace Extra.EventPresences.Middleware.Managers
             }
 
             return stream;
+        }
+
+        public MemoryStream GetQRCode(int UserId)
+        {
+            var stream = new MemoryStream();
+            var getUserResponse = GetUserById(UserId);
+            if (getUserResponse.Success)
+            {
+                var jsonUserDto= JsonConvert.SerializeObject(getUserResponse.Entity);
+                QRCodeGenerator QrGenerator = new QRCodeGenerator();
+                QRCodeData QrCodeInfo = QrGenerator.CreateQrCode(jsonUserDto, QRCodeGenerator.ECCLevel.Q);
+                QRCode QrCode = new QRCode(QrCodeInfo);
+                Bitmap QrBitmap = QrCode.GetGraphic(60);
+                using ( stream = new MemoryStream())
+                {
+                    QrBitmap.Save(stream, System.Drawing.Imaging.ImageFormat.Png);
+                    
+                }
+
+            }
+            return stream;
+
         }
     }
 }

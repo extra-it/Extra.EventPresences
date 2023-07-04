@@ -4,6 +4,7 @@
     <TargetFramework>net6.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <Configurations>Debug;Release;Staging</Configurations>
   </PropertyGroup>
 
   <ItemGroup>
@@ -14,6 +15,8 @@
     <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="7.0.0" />
 	<PackageReference Include="Microsoft.NETCore.Targets" Version="3.0.0" ExcludeAssets="all" PrivateAssets="all" />
 	<PackageReference Include="NPOI" Version="2.6.0" />
+	<PackageReference Include="QRCoder" Version="1.4.2" />
+	<PackageReference Include="System.Drawing.Common" Version="7.0.0" />
   </ItemGroup>
 
   <ItemGroup>

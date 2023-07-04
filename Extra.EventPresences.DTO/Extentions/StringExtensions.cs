@@ -6,7 +6,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 
-namespace Extra.EventPresences.Middleware.Extentions
+namespace Extra.EventPresences.DTO.Extentions
 {
     public static class StringExtensions
     {
