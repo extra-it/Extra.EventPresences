@@ -23,11 +23,11 @@ namespace Extra.EventPresences.Middleware.Managers
 
         protected void HandleException(Exception ex)
         {
-            throw new NotFiniteNumberException();
+            throw ex;
         }
         protected void HandleException(string message, Exception ex)
         {
-            throw new NotFiniteNumberException();
+            throw ex;
         }
     }
 }

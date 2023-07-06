@@ -7,6 +7,8 @@ using Extra.EventPresences.Middleware.Services.Interfaces;
 using Extra.EventPresences.Middleware.Services;
 using System.Reflection;
 using Microsoft.OpenApi.Models;
+using Extra.EventPresences.DTO.Dto;
+using Extra.EventPresences.DTO;
 
 var builder = WebApplication.CreateBuilder(args);
 var environmentName = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
@@ -36,7 +38,10 @@ builder.Services.AddControllers();
 builder.Services.AddScoped<iConfigurationManager, Extra.EventPresences.Middleware.Managers.ConfigurationManager>();
 builder.Services.AddScoped<iLogManager, LogManager>();
 builder.Services.AddScoped<iUserManager, UserManager>();
+builder.Services.AddScoped<iFunctionalityManager, FunctionalityManager>();
 builder.Services.AddScoped<iUserService, UserService>();
+builder.Services.AddScoped<iFunctionalityService, FunctionalityService>();
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.

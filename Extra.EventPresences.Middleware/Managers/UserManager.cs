@@ -1,5 +1,6 @@
 ﻿using Azure;
 using Extra.EventPresences.DTO;
+using Extra.EventPresences.DTO.Dto;
 using Extra.EventPresences.DTO.Enums;
 using Extra.EventPresences.Middleware.Classes;
 using Extra.EventPresences.Middleware.Managers.Interfaces;
@@ -28,8 +29,10 @@ namespace Extra.EventPresences.Middleware.Managers
 {
     public class UserManager : BaseManager, iUserManager
     {
+        FunctionalityManager functionalityManager;
         public UserManager(DBDataContext dbdatacontext) : base(dbdatacontext)
         {
+            functionalityManager = new FunctionalityManager(dbdatacontext);
         }
         public BaseResponseDto<UserDto> GetUserById(int UserId)
         {
@@ -41,9 +44,19 @@ namespace Extra.EventPresences.Middleware.Managers
                 var user = DataContext.Users.FirstOrDefault(x => x.ID == UserId && !x.Deleted);
                 if (user != null)
                 {
-                    retVal.Entity = MapperManager.GetMapper().Map<UserDto>(user);
-                    retVal.Message = "Procedura eseguita correttamente";
-                    retVal.Success = true;
+                    var TempDto = MapperManager.GetMapper().Map<UserDto>(user);
+                    var setCheckResult = SetCheckInOutDateTime(TempDto);
+                    if (setCheckResult.Success)
+                    {
+                        retVal.Entity = setCheckResult.Entity;
+                        retVal.Message = "Procedura eseguita correttamente";
+                        retVal.Success = true;
+                    }
+                    else
+                    {
+                        retVal.Message = setCheckResult.Message;
+                        retVal.Success = false;
+                    }
                 }
                 else
                 {
@@ -63,9 +76,10 @@ namespace Extra.EventPresences.Middleware.Managers
         {
             var retVal = new BaseResponseDto<List<UserDto>>();
             retVal.Entity = new List<UserDto>();
+            List<UserDto> tmpList = new List<UserDto>();
             try
             {
-                IQueryable<User> tempResult = DataContext.Users.Where(x=> !x.Deleted);
+                IQueryable<User> tempResult = DataContext.Users.Where(x => !x.Deleted);
 
                 if (Filter.EventId != 0)
                 {
@@ -89,8 +103,20 @@ namespace Extra.EventPresences.Middleware.Managers
 
                 foreach (User user in tempResult.ToList())
                 {
-                    retVal.Entity.Add(MapperManager.GetMapper().Map<UserDto>(user));
+                    tmpList.Add(MapperManager.GetMapper().Map<UserDto>(user));
                 }
+                var SetCheckResult = SetCheckInOutDateTime(tmpList);
+                if (SetCheckResult.Success)
+                {
+                    retVal.Entity = SetCheckResult.Entity;
+                }
+                else
+                {
+                    retVal.Success = false;
+                    retVal.Message = SetCheckResult.Message;
+                }
+
+
                 //Ordino la lista per il campo Name
                 retVal.Entity = retVal.Entity.OrderBy(x => x.Name).ToList();
                 retVal.Message = "Procedura eseguita correttamente";
@@ -175,6 +201,7 @@ namespace Extra.EventPresences.Middleware.Managers
         public BaseResponseDto<UserDto> AddUser(UserDto UserDto)
         {
             var retVal = new BaseResponseDto<UserDto>();
+            IDbContextTransaction tran = null;
             try
             {
                 string check = CheckUser(UserDto);
@@ -187,23 +214,52 @@ namespace Extra.EventPresences.Middleware.Managers
                 {
 
                     ///Setto lo stato a presente e valorizzo l'orario di checkin!
-                    UserDto.CheckInDatetime = DateTime.UtcNow;
                     UserDto.StatusId = eUserStatus.Present;
 
                     var objDB = MapperManager.GetMapper().Map<User>(UserDto);
                     objDB.DateInsert = DateTime.UtcNow;
 
-
+                    tran = DataContext.Database.BeginTransaction();
                     DataContext.Users.Add(objDB);
                     DataContext.SaveChanges();
 
-                    retVal.Entity = MapperManager.GetMapper().Map<UserDto>(objDB);
-                    retVal.Message = "Utente inserito correttamente";
-                    retVal.Success = true;
+                    EventFunctionalityUserDto EFUDto = new EventFunctionalityUserDto();
+                    EFUDto.UserId = objDB.ID;
+                    EFUDto.EventId = objDB.EventID;
+                    EFUDto.OccursDateTime = DateTime.UtcNow;
+                    EFUDto.Functionality = eFunctionality.CheckIn;
+                    var AddEventFunctionalityUserResult = functionalityManager.AddEventFunctionalityUser(EFUDto);
+                    if (AddEventFunctionalityUserResult.Success)
+                    {
+                        var getUserByIDResult = GetUserById(objDB.ID);
+                        if (getUserByIDResult.Success)
+                        {
+                            retVal.Entity = getUserByIDResult.Entity;
+                            retVal.Message = "Utente inserito correttamente";
+                            retVal.Success = true;
+                            tran.Commit();
+                        }
+                        else
+                        {
+                            retVal.Message = "La procedura non è stata eseguita correttamente. Operazione annullata!";
+                            retVal.Success = false;
+                            tran.Rollback();
+                        }
+                    }
+                    else
+                    {
+                        tran.Rollback();
+                        retVal.Message = AddEventFunctionalityUserResult.Message;
+                        retVal.Success = false;
+                    }
                 }
             }
             catch (Exception ex)
             {
+                if (tran != null)
+                {
+                    tran.Rollback();
+                }
                 retVal.Success = false;
                 retVal.Message = "La procedura ha generato il seguente errore: " + ex.Message;
             }
@@ -291,7 +347,7 @@ namespace Extra.EventPresences.Middleware.Managers
                 bool allok = true;
                 foreach (int UserId in UsersId)
                 {
-                    var ret = CheckInOut(UserId, CheckType);
+                    var ret = CheckInOut(UserId, CheckType,false);
                     if (!ret.Success)
                     {
                         tran.Rollback();
@@ -343,7 +399,7 @@ namespace Extra.EventPresences.Middleware.Managers
                 bool allok = true;
                 foreach (int UserId in UsersId)
                 {
-                    var ret = CancelCheckInOut(UserId, CheckType);
+                    var ret = CancelCheckInOut(UserId, CheckType,false);
                     if (!ret.Success)
                     {
                         tran.Rollback();
@@ -384,9 +440,10 @@ namespace Extra.EventPresences.Middleware.Managers
             return retVal;
         }
 
-        private BaseResponseDto<UserDto> CheckInOut(int UserId, eCheckType CheckType)
+        private BaseResponseDto<UserDto> CheckInOut(int UserId, eCheckType CheckType, bool LocalTran = true)
         {
             var retVal = new BaseResponseDto<UserDto>();
+            IDbContextTransaction tran = null;
             try
             {
                 var ret = GetUserById(UserId);
@@ -397,39 +454,92 @@ namespace Extra.EventPresences.Middleware.Managers
                 }
                 else
                 {
-                    if (CheckType == eCheckType.CheckIn)
+                    var GetEventFunctionalityResult = functionalityManager.GetEventFunctionality(ret.Entity.EventID, (CheckType == eCheckType.CheckIn ? eFunctionality.CheckIn : eFunctionality.CheckOut));
+                    if (GetEventFunctionalityResult.Success)
                     {
-                        ret.Entity.CheckInDatetime = DateTime.UtcNow;
-                        ret.Entity.StatusId = eUserStatus.Present;
+
+                        EventFunctionalityUserDto EFUDto = new EventFunctionalityUserDto();
+                        EFUDto.OccursDateTime = DateTime.UtcNow;
+                        EFUDto.UserId = UserId;
+                        EFUDto.EventId = GetEventFunctionalityResult.Entity.EventID;
+                        EFUDto.Functionality = GetEventFunctionalityResult.Entity.FunctionalityID;
+                        EFUDto.OccursDateTime = DateTime.UtcNow;
+                        if (LocalTran)
+                        {
+                            tran = DataContext.Database.BeginTransaction();
+                        }
+
+                        var AddEventFunctionalityUserDtoResult = functionalityManager.AddEventFunctionalityUser(EFUDto);
+                        if (AddEventFunctionalityUserDtoResult.Success)
+                        {
+                            if (CheckType == eCheckType.CheckIn)
+                            {
+                                ret.Entity.CheckInDatetime = AddEventFunctionalityUserDtoResult.Entity.OccursDateTime;
+                                ret.Entity.StatusId = eUserStatus.Present;
+                            }
+                            else
+                            {
+                                ret.Entity.CheckOutDatetime = AddEventFunctionalityUserDtoResult.Entity.OccursDateTime; ;
+                                ret.Entity.StatusId = eUserStatus.Left;
+                            }
+                            retVal = UpdateUser(ret.Entity);
+                            if (retVal.Success)
+                            {
+                                if (LocalTran)
+                                {
+                                    tran.Commit();
+                                }
+                                if (CheckType == eCheckType.CheckIn)
+                                {
+                                    retVal.Message = "Check-in effettuato correttamente";
+                                }
+                                else
+                                {
+                                    retVal.Message = "Check-out effettuato correttamente";
+                                }
+                                retVal.Success = true;
+                            }
+                            else
+                            {
+                                if (LocalTran)
+                                {
+                                    tran.Rollback();
+                                }
+                            }
+                        }
+                        else
+                        {
+                            if (LocalTran)
+                            {
+                                tran.Rollback();
+                            }
+                            retVal.Success = false;
+                            retVal.Message = AddEventFunctionalityUserDtoResult.Message;
+                        }
                     }
                     else
                     {
-                        ret.Entity.CheckOutDatetime = DateTime.UtcNow;
-                        ret.Entity.StatusId = eUserStatus.Left;
+                        retVal.Success = false;
+                        retVal.Message = GetEventFunctionalityResult.Message;
                     }
-                    retVal = UpdateUser(ret.Entity);
-                    if (CheckType == eCheckType.CheckIn)
-                    {
-                        retVal.Message = "Check-in effettuato correttamente";
-                    }
-                    else
-                    {
-                        retVal.Message = "Check-out effettuato correttamente";
-                    }
-                    retVal.Success = true;
                 }
             }
             catch (Exception ex)
             {
                 retVal.Success = false;
                 retVal.Message = "La procedura ha generato il seguente errore: " + ex.Message;
+                if (LocalTran && tran != null)
+                {
+                    tran.Rollback();
+                }
             }
             return retVal;
         }
 
-        private BaseResponseDto<UserDto> CancelCheckInOut(int UserId, eCheckType CheckType)
+        private BaseResponseDto<UserDto> CancelCheckInOut(int UserId, eCheckType CheckType, bool LocalTran = true)
         {
             var retVal = new BaseResponseDto<UserDto>();
+            IDbContextTransaction tran = null;
             try
             {
                 var ret = GetUserById(UserId);
@@ -440,30 +550,59 @@ namespace Extra.EventPresences.Middleware.Managers
                 }
                 else
                 {
+                    EventFunctionalityUserDto eventFunctionalityUserDto = new EventFunctionalityUserDto();
+                    eventFunctionalityUserDto.UserId = UserId;
+                    eventFunctionalityUserDto.EventId = ret.Entity.EventID;
                     if (CheckType == eCheckType.CheckIn)
                     {
-                        ret.Entity.CheckInDatetime = null;
+                        eventFunctionalityUserDto.Functionality = eFunctionality.CheckIn;
                         ret.Entity.StatusId = eUserStatus.Absent;
                     }
                     else
                     {
-                        ret.Entity.CheckOutDatetime = null;
+                        eventFunctionalityUserDto.Functionality = eFunctionality.CheckOut;
                         ret.Entity.StatusId = eUserStatus.Present;
                     }
-                    retVal = UpdateUser(ret.Entity);
-                    if (CheckType == eCheckType.CheckIn)
+                    if (LocalTran)
                     {
-                        retVal.Message = "Annullamento Check-in effettuato correttamente";
+                        tran = DataContext.Database.BeginTransaction();
+                    }
+                    var DeleteEventFunctionalityUserResult = functionalityManager.DeleteEventFunctionalityUser(eventFunctionalityUserDto);
+                    if (DeleteEventFunctionalityUserResult.Success)
+                    {
+                        retVal = UpdateUser(ret.Entity);
+                        if (CheckType == eCheckType.CheckIn)
+                        {
+                            retVal.Message = "Annullamento Check-in effettuato correttamente";
+                        }
+                        else
+                        {
+                            retVal.Message = "Annullamento Check-out effettuato correttamente";
+                        }
+                        if (LocalTran)
+                        {
+                            tran.Commit();
+                        }
+                        retVal.Success = true;
                     }
                     else
                     {
-                        retVal.Message = "Annullamento Check-out effettuato correttamente";
+                        if (LocalTran)
+                        {
+                            tran.Rollback();
+                        }
+                        retVal.Success = false;
+                        retVal.Message = DeleteEventFunctionalityUserResult.Message;
                     }
-                    retVal.Success = true;
+
                 }
             }
             catch (Exception ex)
             {
+                if (LocalTran && tran!=null)
+                {
+                    tran.Rollback();
+                }
                 retVal.Success = false;
                 retVal.Message = "La procedura ha generato il seguente errore: " + ex.Message;
             }
@@ -618,25 +757,25 @@ namespace Extra.EventPresences.Middleware.Managers
 
             var row = sheet.CreateRow(currentRowIndex);
 
-            row.CreateCell((int)eExportColumns.ID).SetCellValue("ID");
-            row.GetCell((int)eExportColumns.ID).CellStyle = headStyle;
+            row.CreateCell((int)eExportColumn.ID).SetCellValue("ID");
+            row.GetCell((int)eExportColumn.ID).CellStyle = headStyle;
 
-            row.CreateCell((int)eExportColumns.FIRSTNAME).SetCellValue("NOME");
-            row.GetCell((int)eExportColumns.FIRSTNAME).CellStyle = headStyle;
+            row.CreateCell((int)eExportColumn.FIRSTNAME).SetCellValue("NOME");
+            row.GetCell((int)eExportColumn.FIRSTNAME).CellStyle = headStyle;
 
 
-            row.CreateCell((int)eExportColumns.LASTNAME).SetCellValue("COGNOME");
-            row.GetCell((int)eExportColumns.LASTNAME).CellStyle = headStyle;
+            row.CreateCell((int)eExportColumn.LASTNAME).SetCellValue("COGNOME");
+            row.GetCell((int)eExportColumn.LASTNAME).CellStyle = headStyle;
 
-            row.CreateCell((int)eExportColumns.COMPANY).SetCellValue("AZIENDA");
-            row.GetCell((int)eExportColumns.COMPANY).CellStyle = headStyle;
+            row.CreateCell((int)eExportColumn.COMPANY).SetCellValue("AZIENDA");
+            row.GetCell((int)eExportColumn.COMPANY).CellStyle = headStyle;
 
-            row.CreateCell((int)eExportColumns.NOTES).SetCellValue("NOTE");
-            row.GetCell((int)eExportColumns.NOTES).CellStyle = headStyle;
+            row.CreateCell((int)eExportColumn.NOTES).SetCellValue("NOTE");
+            row.GetCell((int)eExportColumn.NOTES).CellStyle = headStyle;
             currentRowIndex++;
 
-            row.CreateCell((int)eExportColumns.PRESENT).SetCellValue("PRESENTE");
-            row.GetCell((int)eExportColumns.PRESENT).CellStyle = headStyle;
+            row.CreateCell((int)eExportColumn.PRESENT).SetCellValue("PRESENTE");
+            row.GetCell((int)eExportColumn.PRESENT).CellStyle = headStyle;
 
             #endregion
 
@@ -646,20 +785,20 @@ namespace Extra.EventPresences.Middleware.Managers
             {
                 row = sheet.CreateRow(currentRowIndex);
 
-                row.CreateCell((int)eExportColumns.ID).SetCellValue(user.ID.ToString());
-                row.GetCell((int)eExportColumns.ID).CellStyle = DataStyle;
+                row.CreateCell((int)eExportColumn.ID).SetCellValue(user.ID.ToString());
+                row.GetCell((int)eExportColumn.ID).CellStyle = DataStyle;
 
-                row.CreateCell((int)eExportColumns.FIRSTNAME).SetCellValue(user.Firstname);
-                row.GetCell((int)eExportColumns.FIRSTNAME).CellStyle = DataStyle;
+                row.CreateCell((int)eExportColumn.FIRSTNAME).SetCellValue(user.Firstname);
+                row.GetCell((int)eExportColumn.FIRSTNAME).CellStyle = DataStyle;
 
-                row.CreateCell((int)eExportColumns.LASTNAME).SetCellValue(user.Lastname);
-                row.GetCell((int)eExportColumns.LASTNAME).CellStyle = DataStyle;
+                row.CreateCell((int)eExportColumn.LASTNAME).SetCellValue(user.Lastname);
+                row.GetCell((int)eExportColumn.LASTNAME).CellStyle = DataStyle;
 
-                row.CreateCell((int)eExportColumns.COMPANY).SetCellValue(user.Company);
-                row.GetCell((int)eExportColumns.COMPANY).CellStyle = DataStyle;
+                row.CreateCell((int)eExportColumn.COMPANY).SetCellValue(user.Company);
+                row.GetCell((int)eExportColumn.COMPANY).CellStyle = DataStyle;
 
-                row.CreateCell((int)eExportColumns.NOTES).SetCellValue(user.Notes);
-                row.GetCell((int)eExportColumns.NOTES).CellStyle = DataStyle;
+                row.CreateCell((int)eExportColumn.NOTES).SetCellValue(user.Notes);
+                row.GetCell((int)eExportColumn.NOTES).CellStyle = DataStyle;
 
                 //row.CreateCell((int)eExportColumns.PRESENT).SetCellValue(user.IsPresent.ToString());
                 //row.GetCell((int)eExportColumns.PRESENT).CellStyle = DataStyle;
@@ -669,12 +808,12 @@ namespace Extra.EventPresences.Middleware.Managers
 
             #endregion
 
-            sheet.AutoSizeColumn((int)eExportColumns.ID);
-            sheet.AutoSizeColumn((int)eExportColumns.FIRSTNAME);
-            sheet.AutoSizeColumn((int)eExportColumns.LASTNAME);
-            sheet.AutoSizeColumn((int)eExportColumns.NOTES);
-            sheet.AutoSizeColumn((int)eExportColumns.COMPANY);
-            sheet.AutoSizeColumn((int)eExportColumns.PRESENT);
+            sheet.AutoSizeColumn((int)eExportColumn.ID);
+            sheet.AutoSizeColumn((int)eExportColumn.FIRSTNAME);
+            sheet.AutoSizeColumn((int)eExportColumn.LASTNAME);
+            sheet.AutoSizeColumn((int)eExportColumn.NOTES);
+            sheet.AutoSizeColumn((int)eExportColumn.COMPANY);
+            sheet.AutoSizeColumn((int)eExportColumn.PRESENT);
 
             using (stream = new MemoryStream())
             {
@@ -690,20 +829,106 @@ namespace Extra.EventPresences.Middleware.Managers
             var getUserResponse = GetUserById(UserId);
             if (getUserResponse.Success)
             {
-                var jsonUserDto= JsonConvert.SerializeObject(getUserResponse.Entity);
+                QRCodeUser QRCodeUser = new QRCodeUser(UserId);
+                var jsonQRCodeUser = JsonConvert.SerializeObject(QRCodeUser);
                 QRCodeGenerator QrGenerator = new QRCodeGenerator();
-                QRCodeData QrCodeInfo = QrGenerator.CreateQrCode(jsonUserDto, QRCodeGenerator.ECCLevel.Q);
+                QRCodeData QrCodeInfo = QrGenerator.CreateQrCode(jsonQRCodeUser, QRCodeGenerator.ECCLevel.Q);
                 QRCode QrCode = new QRCode(QrCodeInfo);
                 Bitmap QrBitmap = QrCode.GetGraphic(60);
-                using ( stream = new MemoryStream())
+                using (stream = new MemoryStream())
                 {
                     QrBitmap.Save(stream, System.Drawing.Imaging.ImageFormat.Png);
-                    
+
                 }
 
             }
             return stream;
+        }
 
+        private BaseResponseDto<UserDto> SetCheckInOutDateTime(UserDto userDto)
+        {
+            BaseResponseDto<UserDto> retVal = new BaseResponseDto<UserDto>();
+            try
+            {
+                var getByUserResult = functionalityManager.GetUserFunctionalities(userDto.ID);
+                if (getByUserResult.Success)
+                {
+                    foreach (var function in getByUserResult.Entity)
+                    {
+                        switch (function.Functionality)
+                        {
+                            case eFunctionality.CheckIn:
+                                userDto.CheckInDatetime = function.OccursDateTime;
+                                break;
+                            case eFunctionality.CheckOut:
+                                userDto.CheckOutDatetime = function.OccursDateTime;
+                                break;
+                        }
+                    }
+                    retVal.Entity = userDto;
+                    retVal.Success = true;
+                }
+                else
+                {
+                    retVal.Message = getByUserResult.Message;
+                    retVal.Success = false;
+
+                }
+            }
+            catch (Exception ex)
+            {
+                retVal.Message = "La procedura ha generato il seguente errore: " + ex.Message;
+                retVal.Success = false;
+                throw;
+            }
+            return retVal;
+        }
+
+        private BaseResponseDto<List<UserDto>> SetCheckInOutDateTime(List<UserDto> usersDto)
+        {
+            BaseResponseDto<List<UserDto>> retVal = new BaseResponseDto<List<UserDto>>();
+            try
+            {
+                if (usersDto != null && usersDto.Count > 0)
+                {
+                    //I Assume that all user are part of the sme EventId!!
+                    var UsersFunctionalitiesResult = functionalityManager.GetUsersFunctionalities(usersDto.First().EventID);
+                    if (UsersFunctionalitiesResult.Success)
+                    {
+                        foreach (var function in UsersFunctionalitiesResult.Entity)
+                        {
+                            var tmpUser = usersDto.FirstOrDefault(x => x.ID == function.UserId);
+                            if (tmpUser != null)
+                            {
+                                switch (function.Functionality)
+                                {
+                                    case eFunctionality.CheckIn:
+                                        tmpUser.CheckInDatetime = function.OccursDateTime;
+                                        break;
+                                    case eFunctionality.CheckOut:
+                                        tmpUser.CheckOutDatetime = function.OccursDateTime;
+                                        break;
+                                }
+                            }
+                        }
+                        retVal.Entity = usersDto;
+                        retVal.Success = true;
+                    }
+                    else
+                    {
+                        retVal.Message = UsersFunctionalitiesResult.Message;
+                        retVal.Success = false;
+
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                retVal.Message = "La procedura ha generato il seguente errore: " + ex.Message;
+                retVal.Success = false;
+                throw;
+            }
+            return retVal;
         }
     }
 }

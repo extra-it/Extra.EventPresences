@@ -25,6 +25,7 @@ namespace Extra.EventPresences.Model.Enums
         CancelCheckInMultiple=64,
         GetUserById = 65,
         GetInviteds=66,
-        GetQRCode=67
+        GetQRCode=67,
+        GetFunctionalities=68,
     }
 }

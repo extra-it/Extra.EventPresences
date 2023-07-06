@@ -1,7 +1,9 @@
 ﻿using AutoMapper;
 using Azure;
 using Extra.EventPresences.DTO;
+using Extra.EventPresences.DTO.Dto;
 using Extra.EventPresences.Model.Entities;
+using Extra.EventPresences.Model.Enums;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -42,6 +44,8 @@ namespace Extra.EventPresences.Middleware.Managers
             //Read
 
             cfg.CreateMap<User, UserDto>();
+            cfg.CreateMap<EventFunctionality, EventFunctionalityDto>().ForMember(dest => dest.FunctionalityID, source => source.MapFrom(src => GetMapper().Map<int,eFunctionality>((int)src.FunctionalityID)));
+            cfg.CreateMap<EventFunctionalityUser, EventFunctionalityUserDto>();
             //               .ForMember(dest => dest.SaleStatusID, source => source.MapFrom(src => GetMapper().Map<int, eSaleStatus>((int)src.SaleStatusID)))
             //               .ForMember(src => src.Password, dest => dest.Ignore());
             //cfg.CreateMap<Operator, OperatorDto>();
@@ -51,10 +55,16 @@ namespace Extra.EventPresences.Middleware.Managers
             ////Write
             cfg.CreateMap<UserDto, User>()
                 .ForMember(dest=>dest.ID, dest => dest.Ignore());
+
+            cfg.CreateMap<FunctionalityDto, Functionality>();
+            cfg.CreateMap<EventFunctionalityUserDto, EventFunctionalityUser>();
+            cfg.CreateMap<EventFunctionalityDto, EventFunctionality>().ForMember(dest => dest.FunctionalityID, source => source.MapFrom(src => GetMapper().Map<eFunctionality, int>((eFunctionality)src.FunctionalityID)));
+            
+
             //    .ForMember(dest => dest.SaleStatusID, source => source.MapFrom(src => GetMapper().Map<eSaleStatus, int>((eSaleStatus)src.SaleStatusID)));
             //cfg.CreateMap<OperatorDto, Operator>();
             //cfg.CreateMap<StatisticDto, Statistic>()
-            //    .ForMember(dest => dest.AppActivityID, source => source.MapFrom(src => GetMapper().Map<eAppActivity, int>((eAppActivity)src.AppActivityID))); ;
+            //    .ForMember(dest => dest.AppActivityID, source => source.MapFrom(src => GetMapper().Map<eAppActivity, int>((eAppActivity)src.AppActivityID))); 
 
 
         }

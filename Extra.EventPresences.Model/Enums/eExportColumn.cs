@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 
 namespace Extra.EventPresences.Model.Enums
 {
-    public enum eExportColumns
+    public enum eExportColumn
     {
         ID = 0,
         FIRSTNAME = 1,

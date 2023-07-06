@@ -22,8 +22,8 @@ namespace Extra.EventPresences.Model.Entities
         public string? Company { get; set; }
         public string? Notes { get; set; }
 
-        public DateTime? CheckInDatetime { get; set; }
-        public DateTime? CheckOutDatetime { get; set; }
+        //public DateTime? CheckInDatetime { get; set; }
+        //public DateTime? CheckOutDatetime { get; set; }
         public int StatusId { get; set; }
 
         public DateTime DateInsert { get; set; }
